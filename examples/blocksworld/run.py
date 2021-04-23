@@ -49,14 +49,15 @@ def solve_pddlstream(focused=False):
     if focused:
         solution = solve_focused(pddlstream_problem, unit_costs=True)
     else:
-        solution = solve_incremental(pddlstream_problem, unit_costs=True, planner='cerberus', debug=False)
+        # solution = solve_incremental(pddlstream_problem, unit_costs=True, planner='cerberus', debug=False)
+        solution = solve_incremental(pddlstream_problem, unit_costs=True, debug=False)
     print_solution(solution)
 
 ##################################################
 
 def main():
-    #solve_pddl()
-    solve_pddlstream()
+    solve_pddl()
+    # solve_pddlstream()
 
 if __name__ == '__main__':
     main()
