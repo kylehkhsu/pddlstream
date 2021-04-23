@@ -2,11 +2,10 @@
 
 from __future__ import print_function
 
-from pddlstream.algorithms.focused import solve_focused
-from pddlstream.algorithms.incremental import solve_incremental
-from pddlstream.language.generator import from_test, from_fn
+from pddlstream.algorithms.meta import solve, create_parser, FOCUSED_ALGORITHMS
+from pddlstream.language.generator import from_test, from_fn, universe_test
 from pddlstream.language.stream import StreamInfo
-from pddlstream.language.constants import And, print_solution
+from pddlstream.language.constants import And, print_solution, PDDLProblem
 from pddlstream.utils import read, get_file_path
 
 TRAJ = [0, 1]
@@ -35,10 +34,11 @@ def get_pddlstream_problem():
     stream_pddl = read(get_file_path(__file__, 'stream.pddl'))
     stream_map = {
         'sample-pickable': from_fn(feasibility_fn),
-        'test-cleanable': from_fn(lambda o, fluents=set(): (TRAJ,)),
+        'test-cleanable': from_test(universe_test),
         #'test-cleanable': from_fn(lambda o, fluents=set(): None if fluents else (TRAJ,)),
     }
 
+    # Currently tests whether one can clean twice
     init = [
         ('Block', 'b1'),
         ('Block', 'b2'),
@@ -47,20 +47,25 @@ def get_pddlstream_problem():
     ]
 
     #goal = ('Holding', 'b1')
-    goal = And(('Clean', 'b1'), ('Cooked', 'b1'))
+    goal = And(
+        ('Clean', 'b1'),
+        ('Cooked', 'b1'),
+    )
 
-    return domain_pddl, constant_map, stream_pddl, stream_map, init, goal
+    return PDDLProblem(domain_pddl, constant_map, stream_pddl, stream_map, init, goal)
 
 ##################################################
 
 def main():
+    parser = create_parser()
+    args = parser.parse_args()
+    print('Arguments:', args)
+
     # TODO: maybe load problems as a domain explicitly
-    pddlstream_problem = get_pddlstream_problem()
-    stream_info = {
-        #'test-feasible': StreamInfo(negate=True),
-    }
-    solution = solve_focused(pddlstream_problem, stream_info=stream_info)
-    #solution = solve_incremental(pddlstream_problem) # Should throw an error
+    problem = get_pddlstream_problem()
+    #if args.algorithm not in FOCUSED_ALGORITHMS:
+    #    raise RuntimeError('The {} algorithm does not support fluent streams'.format(args.algorithm))
+    solution = solve(problem, algorithm=args.algorithm, unit_costs=args.unit)
     print_solution(solution)
 
 if __name__ == '__main__':

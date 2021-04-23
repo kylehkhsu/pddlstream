@@ -1,22 +1,24 @@
 from __future__ import print_function
 
+import time
+
 from itertools import product
 from copy import deepcopy, copy
 
 from pddlstream.algorithms.instantiation import Instantiator
-from pddlstream.algorithms.scheduling.plan_streams import plan_streams
+from pddlstream.algorithms.scheduling.plan_streams import plan_streams, OptSolution
 from pddlstream.algorithms.scheduling.recover_streams import evaluations_from_stream_plan
 from pddlstream.algorithms.constraints import add_plan_constraints, PlanConstraints, WILD
-from pddlstream.language.constants import FAILED, INFEASIBLE, is_plan, str_from_plan, get_length
+from pddlstream.language.constants import FAILED, INFEASIBLE, is_plan
 from pddlstream.language.conversion import evaluation_from_fact, substitute_expression
 from pddlstream.language.function import FunctionResult, Function
 from pddlstream.language.stream import StreamResult, Result
 from pddlstream.language.statistics import check_effort, compute_plan_effort
 from pddlstream.language.object import Object, OptimisticObject
-from pddlstream.utils import INF, safe_zip, get_mapping, implies
+from pddlstream.utils import INF, safe_zip, get_mapping, implies, elapsed_time
 
 CONSTRAIN_STREAMS = False
-CONSTRAIN_PLANS = False # TODO: might cause some strange effects on continuous_tamp
+CONSTRAIN_PLANS = False
 MAX_DEPTH = INF # 1 | INF
 
 def is_refined(stream_plan):
@@ -24,13 +26,15 @@ def is_refined(stream_plan):
     if not is_plan(stream_plan):
         return True
     # TODO: some of these opt_index equal None
-    return all((result.opt_index is None) or (result.opt_index == 0)
+    return all((result.opt_index is None) or result.is_refined()
                for result in stream_plan)
 
 ##################################################
 
-def optimistic_process_instance(instantiator, instance):
+def optimistic_process_instance(instantiator, instance, verbose=False):
     for result in instance.next_optimistic():
+        if verbose:
+            print(result) # TODO: make a debug tools that reports the optimistic streams
         new_facts = False
         complexity = instantiator.compute_complexity(instance)
         for fact in result.get_certified():
@@ -47,7 +51,7 @@ def prune_high_effort_streams(streams, max_effort=INF, **effort_args):
             low_effort_streams.append(stream)
     return low_effort_streams
 
-def optimistic_process_streams(evaluations, streams, complexity_limit, **effort_args):
+def optimistic_process_streams(evaluations, streams, complexity_limit=INF, **effort_args):
     optimistic_streams = prune_high_effort_streams(streams, **effort_args)
     instantiator = Instantiator(optimistic_streams)
     for evaluation, node in evaluations.items():
@@ -62,31 +66,34 @@ def optimistic_process_streams(evaluations, streams, complexity_limit, **effort_
 
 ##################################################
 
-def optimistic_stream_instantiation(instance, bindings, evaluations, opt_evaluations,
-                                    only_immediate=False):
+def optimistic_stream_instantiation(instance, bindings, opt_evaluations, only_immediate=False):
     # TODO: combination for domain predicates
     new_instances = []
-    for input_combo in product(*[bindings.get(i, [i]) for i in instance.input_objects]):
+    input_candidates = [bindings.get(i, [i]) for i in instance.input_objects]
+    if only_immediate and not all(len(candidates) == 1 for candidates in input_candidates):
+        return new_instances
+    for input_combo in product(*input_candidates):
         mapping = get_mapping(instance.input_objects, input_combo)
         domain_evaluations = set(map(evaluation_from_fact, substitute_expression(
             instance.get_domain(), mapping))) # TODO: could just instantiate first
         if domain_evaluations <= opt_evaluations:
             new_instance = instance.external.get_instance(input_combo)
-            if (new_instance.opt_index != 0) and implies(only_immediate, domain_evaluations <= evaluations):
-                new_instance.opt_index -= 1
+            # TODO: method for eagerly evaluating some of these?
+            if not new_instance.is_refined():
+                new_instance.refine()
             new_instances.append(new_instance)
     return new_instances
 
 def optimistic_stream_evaluation(evaluations, stream_plan, use_bindings=True):
     # TODO: can also use the instantiator and operate directly on the outputs
     # TODO: could bind by just using new_evaluations
-    evaluations = set(evaluations) # For subset testing
+    evaluations = set(evaluations) # Converts to a set for subset testing
     opt_evaluations = set(evaluations)
     new_results = []
-    bindings = {}
+    bindings = {} # TODO: report the depth considered
     for opt_result in stream_plan: # TODO: just refine the first step of the plan
         for new_instance in optimistic_stream_instantiation(
-                opt_result.instance, (bindings if use_bindings else {}), evaluations, opt_evaluations):
+                opt_result.instance, (bindings if use_bindings else {}), opt_evaluations):
             for new_result in new_instance.next_optimistic():
                 opt_evaluations.update(map(evaluation_from_fact, new_result.get_certified()))
                 new_results.append(new_result)
@@ -97,32 +104,31 @@ def optimistic_stream_evaluation(evaluations, stream_plan, use_bindings=True):
 
 ##################################################
 
-def compute_stream_results(evaluations, opt_results, externals, complexity_limit, **effort_args):
-    # TODO: start from the original evaluations or use the stream plan preimage
-    # TODO: only use streams in the states between the two actions
-    # TODO: apply hierarchical planning to restrict the set of streams that considered on each subproblem
-    # TODO: plan up to first action that only has one
-    # TODO: revisit considering double bound streams
-    functions = list(filter(lambda s: type(s) is Function, externals))
-    opt_evaluations = evaluations_from_stream_plan(evaluations, opt_results)
-    new_results, _ = optimistic_process_streams(opt_evaluations, functions, complexity_limit, **effort_args)
-    return opt_results + new_results
+# def compute_stream_results(evaluations, opt_results, externals, complexity_limit, **effort_args):
+#     # TODO: revisit considering double bound streams
+#     functions = list(filter(lambda s: type(s) is Function, externals))
+#     opt_evaluations = evaluations_from_stream_plan(evaluations, opt_results)
+#     new_results, _ = optimistic_process_streams(opt_evaluations, functions, complexity_limit, **effort_args)
+#     return opt_results + new_results
 
-def compute_skeleton_constraints(action_plan, bindings):
+def compute_skeleton_constraints(opt_plan, bindings):
     skeleton = []
     groups = {arg: values for arg, values in bindings.items() if len(values) != 1}
+    action_plan, preimage_facts = opt_plan
     for name, args in action_plan:
         new_args = []
         for arg in args:
             if isinstance(arg, Object):
                 new_args.append(arg)
             elif isinstance(arg, OptimisticObject):
-                assert bindings.get(arg, [])
-                if len(bindings[arg]) == 1:
-                    new_args.append(bindings[arg][0])
-                else:
-                    #new_args.append(WILD)
-                    new_args.append(arg)
+                new_args.append(WILD)
+                # TODO: might cause some strange effects on continuous_tamp -p blocked
+                #assert bindings.get(arg, [])
+                #if len(bindings[arg]) == 1:
+                #    new_args.append(bindings[arg][0])
+                #else:
+                #    #new_args.append(WILD)
+                #    new_args.append(arg)
             else:
                 raise ValueError(arg)
         skeleton.append((name, new_args))
@@ -141,7 +147,7 @@ def get_optimistic_solve_fn(goal_exp, domain, negative, max_cost=INF, **kwargs):
         domain2 = deepcopy(domain)
         evaluations2 = copy(evaluations)
         goal_exp2 = add_plan_constraints(constraints, domain2, evaluations2, goal_exp, internal=True)
-        max_cost2 = max_cost if constraints is None else min(max_cost, constraints.max_cost)
+        max_cost2 = max_cost if (constraints is None) else min(max_cost, constraints.max_cost)
         return plan_streams(evaluations2, goal_exp2, domain2, results, negative,
                             max_cost=max_cost2, **kwargs)
     return fn
@@ -151,10 +157,11 @@ def get_optimistic_solve_fn(goal_exp, domain, negative, max_cost=INF, **kwargs):
 def hierarchical_plan_streams(evaluations, externals, results, optimistic_solve_fn, complexity_limit,
                               depth, constraints, **effort_args):
     if MAX_DEPTH <= depth:
-        return None, None, INF, depth
-    stream_plan, action_plan, cost = optimistic_solve_fn(evaluations, results, constraints)
-    if not is_plan(action_plan):
-        return stream_plan, action_plan, cost, depth
+        return OptSolution(None, None, INF), depth
+    stream_plan, opt_plan, cost = optimistic_solve_fn(evaluations, results, constraints)
+    if not is_plan(opt_plan) or is_refined(stream_plan):
+        return OptSolution(stream_plan, opt_plan, cost), depth
+    #action_plan, preimage_facts = opt_plan
     #dump_plans(stream_plan, action_plan, cost)
     #create_visualizations(evaluations, stream_plan, depth)
     #print(depth, get_length(stream_plan))
@@ -168,36 +175,38 @@ def hierarchical_plan_streams(evaluations, externals, results, optimistic_solve_
     #            print(result, effort)
     #print()
 
-    if is_refined(stream_plan):
-        return stream_plan, action_plan, cost, depth
+    # TODO: identify control parameters that can be separated across actions
+    new_depth = depth + 1
     new_results, bindings = optimistic_stream_evaluation(evaluations, stream_plan)
-    if not CONSTRAIN_STREAMS and not CONSTRAIN_PLANS:
-        return None, None, INF, depth + 1
-    if CONSTRAIN_STREAMS:
-        next_results = compute_stream_results(evaluations, new_results, externals, **effort_args)
-    else:
-        next_results, _ = optimistic_process_streams(evaluations, externals, complexity_limit, **effort_args)
+    if not (CONSTRAIN_STREAMS or CONSTRAIN_PLANS):
+        return OptSolution(FAILED, FAILED, INF), new_depth
+    #if CONSTRAIN_STREAMS:
+    #    next_results = compute_stream_results(evaluations, new_results, externals, complexity_limit, **effort_args)
+    #else:
+    next_results, _ = optimistic_process_streams(evaluations, externals, complexity_limit, **effort_args)
     next_constraints = None
     if CONSTRAIN_PLANS:
-        next_constraints = compute_skeleton_constraints(action_plan, bindings)
+        next_constraints = compute_skeleton_constraints(opt_plan, bindings)
     return hierarchical_plan_streams(evaluations, externals, next_results, optimistic_solve_fn, complexity_limit,
-                                     depth + 1, next_constraints, **effort_args)
+                                     new_depth, next_constraints, **effort_args)
 
 def iterative_plan_streams(all_evaluations, externals, optimistic_solve_fn, complexity_limit, **effort_args):
     # Previously didn't have unique optimistic objects that could be constructed at arbitrary depths
+    start_time = time.time()
     complexity_evals = {e: n for e, n in all_evaluations.items() if n.complexity <= complexity_limit}
     num_iterations = 0
     while True:
         num_iterations += 1
         results, exhausted = optimistic_process_streams(complexity_evals, externals, complexity_limit, **effort_args)
-        stream_plan, action_plan, cost, final_depth = hierarchical_plan_streams(
+        opt_solution, final_depth = hierarchical_plan_streams(
             complexity_evals, externals, results, optimistic_solve_fn, complexity_limit,
             depth=0, constraints=None, **effort_args)
-        print('Attempt: {} | Results: {} | Depth: {} | Success: {}'.format(
-            num_iterations, len(results), final_depth, is_plan(action_plan)))
+        stream_plan, action_plan, cost = opt_solution
+        print('Attempt: {} | Results: {} | Depth: {} | Success: {} | Time: {:.3f}'.format(
+            num_iterations, len(results), final_depth, is_plan(action_plan), elapsed_time(start_time)))
         if is_plan(action_plan):
-            return stream_plan, action_plan, cost
+            return OptSolution(stream_plan, action_plan, cost)
         if final_depth == 0:
             status = INFEASIBLE if exhausted else FAILED
-            return status, status, cost
+            return OptSolution(status, status, cost)
     # TODO: should streams along the sampled path automatically have no optimistic value

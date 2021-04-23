@@ -1,22 +1,18 @@
 from __future__ import print_function
 
-import cProfile
-import math
 import os
-import pstats
 from collections import namedtuple
 
-from pddlstream.algorithms.focused import solve_focused
+from pddlstream.algorithms.meta import solve, create_parser
 from pddlstream.language.function import FunctionInfo
 from pddlstream.language.generator import from_fn, from_test
 
 from examples.discrete_belief.dist import DDist, MixtureDD, DeltaDist, UniformDist, totalProbability, JDist
-from pddlstream.algorithms.incremental import solve_incremental
 from pddlstream.algorithms.downward import get_cost_scale, set_cost_scale, MAX_FD_COST
 
-from pddlstream.language.constants import And, print_solution
+from pddlstream.language.constants import And, print_solution, PDDLProblem
 from pddlstream.language.stream import StreamInfo
-from pddlstream.utils import read, INF
+from pddlstream.utils import read, INF, Profiler
 
 # TODO: would be helpful if I could use <= here
 # TODO: could use fixed threshold or the max of the ones met
@@ -65,13 +61,12 @@ def get_belief_problem(deterministic, observable):
 
 ##################################################
 
-SCALE_COST = 1e3
-MAX_COST = MAX_FD_COST / (10 * SCALE_COST)
+MAX_COST = MAX_FD_COST / (100 * get_cost_scale())
 
-def clip_cost(cost): # TODO: move this to downward?
+def clip_cost(cost, max_cost=MAX_COST): # TODO: move this to downward?
     if cost == INF:
-        return MAX_COST
-    return min(cost, MAX_COST)
+        return max_cost
+    return min(cost, max_cost)
 
 
 #def clip_p(p, min_p=1e-3, max_p=1-1e-3):
@@ -265,36 +260,35 @@ def to_pddlstream(belief_problem, collisions=True):
         #'PCollision': from_fn(prob_occupied), # Then can use GE
     }
 
-    return domain_pddl, constant_map, stream_pddl, stream_map, init, goal
+    return PDDLProblem(domain_pddl, constant_map, stream_pddl, stream_map, init, goal)
 
 ##################################################
 
-def main(deterministic=False, observable=False, collisions=True, focused=True, factor=True):
+def main(deterministic=False, observable=False, collisions=True, factor=True):
+    parser = create_parser()
+    args = parser.parse_args()
+    print('Arguments:', args)
+
+    # TODO: AssertionError: degenerate distribution DDist{l0: 0.00000}
     # TODO: global search over the state
     belief_problem = get_belief_problem(deterministic, observable)
     pddlstream_problem = to_pddlstream(belief_problem, collisions)
-    set_cost_scale(SCALE_COST)
     print('Cost scale:', get_cost_scale())
 
-    pr = cProfile.Profile()
-    pr.enable()
+    stream_info = {
+        'GE': StreamInfo(from_test(ge_fn), eager=False),
+        'prob-after-move': StreamInfo(from_fn(get_opt_move_fn(factor=factor))),
+        'MoveCost': FunctionInfo(move_cost_fn),
+        'prob-after-look': StreamInfo(from_fn(get_opt_obs_fn(factor=factor))),
+        'LookCost': FunctionInfo(get_look_cost_fn(p_look_fp=0, p_look_fn=0)),
+    }
     planner = 'ff-wastar1'
-    if focused:
-        stream_info = {
-            'GE': StreamInfo(from_test(ge_fn), eager=False),
-            'prob-after-move': StreamInfo(from_fn(get_opt_move_fn(factor=factor))),
-            'MoveCost': FunctionInfo(move_cost_fn),
-            'prob-after-look': StreamInfo(from_fn(get_opt_obs_fn(factor=factor))),
-            'LookCost': FunctionInfo(get_look_cost_fn(p_look_fp=0, p_look_fn=0)),
-        }
-        solution = solve_focused(pddlstream_problem, stream_info=stream_info, planner=planner, debug=False,
-                                 success_cost=0, unit_costs=False, max_time=30)
-    else:
-        solution = solve_incremental(pddlstream_problem, planner=planner, debug=True,
-                                     success_cost=MAX_COST, unit_costs=False, max_time=30)
-    pr.disable()
-    pstats.Stats(pr).sort_stats('tottime').print_stats(10)
+    success_cost = 0 # 0 | MAX_COST
+    with Profiler(field='tottime', num=10):
+        solution = solve(pddlstream_problem, algorithm=args.algorithm, unit_costs=args.unit,
+                         stream_info=stream_info, planner=planner, debug=False,
+                         success_cost=success_cost, max_time=30)
     print_solution(solution)
 
 if __name__ == '__main__':
-    main(deterministic=False, observable=False, collisions=True, focused=True)
+    main()

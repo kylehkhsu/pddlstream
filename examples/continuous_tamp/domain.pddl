@@ -16,6 +16,7 @@
     (Placeable ?b ?s)
     (PoseCollision ?b1 ?p1 ?b2 ?p2)
     (TrajCollision ?t ?b2 ?p2)
+    (Stove ?s)
 
     ; Fluent predicates
     (AtPose ?b ?p)
@@ -24,6 +25,8 @@
     (Holding ?r ?b)
     (HandEmpty ?r)
     (CanMove ?r)
+    (CanManipulate ?r)
+    (Cooked ?b)
 
     ; Derived predicates
     (In ?b ?s)
@@ -31,6 +34,7 @@
     (UnsafeTraj ?t)
   )
   (:functions
+    (Cost)
     (Dist ?q1 ?q2)
     ; (Duration ?t)
   )
@@ -38,23 +42,29 @@
   (:action move
     :parameters (?r ?q1 ?t ?q2)
     :precondition (and (Robot ?r) (Motion ?q1 ?t ?q2)
-                       (AtConf ?r ?q1) (CanMove ?r)) ; (not (UnsafeTraj ?t)))
+                       (AtConf ?r ?q1) (CanMove ?r) ; (not (UnsafeTraj ?t)))
+                  )
     :effect (and (AtConf ?r ?q2)
+                 (CanManipulate ?r)
                  (not (AtConf ?r ?q1)) (not (CanMove ?r))
                  (increase (total-cost) (Dist ?q1 ?q2))))
 
   (:action pick
     :parameters (?r ?b ?p ?g ?q)
     :precondition (and (Robot ?r) (Kin ?b ?q ?p ?g)
-                       (AtConf ?r ?q) (AtPose ?b ?p) (HandEmpty ?r))
+                       (AtConf ?r ?q) (AtPose ?b ?p) (HandEmpty ?r)
+                       ;(CanManipulate ?r)
+                  )
     :effect (and (AtGrasp ?r ?b ?g) (CanMove ?r)
                  (not (AtPose ?b ?p)) (not (HandEmpty ?r))
-                 (increase (total-cost) 10)))
+                 (not (CanManipulate ?r))
+                 (increase (total-cost) (Cost))))
 
   (:action place
     :parameters (?r ?b ?p ?g ?q)
     :precondition (and (Robot ?r) (Kin ?b ?q ?p ?g)
                        (AtConf ?r ?q) (AtGrasp ?r ?b ?g)
+                       ;(CanManipulate ?r)
                        (not (UnsafePose ?b ?p))
                        (forall (?b2 ?p2) ; TODO: makes incremental slow
                          (imply (and (Pose ?b2 ?p2) (AtPose ?b2 ?p2))
@@ -62,8 +72,16 @@
                   )
     :effect (and (AtPose ?b ?p) (HandEmpty ?r) (CanMove ?r)
                  (not (AtGrasp ?r ?b ?g))
-                 (increase (total-cost) 10))
+                 (not (CanManipulate ?r))
+                 (increase (total-cost) (Cost)))
   )
+
+  (:action cook
+    :parameters (?b ?s)
+    :precondition (and (Placeable ?b ?s) (Stove ?s)
+                       (In ?b ?s))
+    :effect (and (Cooked ?b)
+                 (increase (total-cost) (Cost))))
 
   (:derived (In ?b ?s)
     (exists (?p) (and (Contain ?b ?p ?s)

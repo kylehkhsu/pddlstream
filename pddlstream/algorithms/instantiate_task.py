@@ -1,15 +1,16 @@
 from __future__ import print_function
 
 import os
-from collections import namedtuple, defaultdict, deque
+from collections import namedtuple, defaultdict, deque, Counter
 from time import time
 
 from pddlstream.algorithms.downward import get_literals, get_precondition, get_fluents, get_function_assignments, \
     TRANSLATE_OUTPUT, parse_sequential_domain, parse_problem, task_from_domain_problem, GOAL_NAME, literal_holds, \
-    get_effects, get_conjunctive_parts, get_conditional_effects
+    get_conjunctive_parts, get_conditional_effects
 from pddlstream.algorithms.relation import Relation, compute_order, solve_satisfaction
 from pddlstream.language.constants import is_parameter
-from pddlstream.utils import flatten, apply_mapping, MockSet, elapsed_time, clear_dir, Verbose
+from pddlstream.utils import flatten, apply_mapping, MockSet, elapsed_time, Verbose, safe_remove, ensure_dir, \
+    str_from_object, user_input
 
 import pddl
 import instantiate
@@ -44,7 +45,8 @@ def instantiate_condition(action, is_static, args_from_predicate):
     static_conditions = list(filter(is_static, get_literals(get_precondition(action))))
     static_parameters = set(filter(is_parameter, flatten(atom.args for atom in static_conditions)))
     if not (parameters <= static_parameters):
-        raise NotImplementedError(parameters)
+        raise NotImplementedError('Could not instantiate action {} due to parameters: {}'.format(
+            action.name, str_from_object(parameters - static_parameters)))
     atoms_from_cond = {condition: args_from_predicate[condition.predicate, get_constants(condition)]
                        for condition in static_conditions}
     conditions, atoms = zip(*atoms_from_cond.items())
@@ -148,7 +150,7 @@ def instantiate_domain(task, prune_static=True):
                 instantiated_axioms.append(inst_axiom)
 
     reachable_facts, reachable_operators = get_achieving_axioms(init_facts, instantiated_actions + instantiated_axioms)
-    atoms = {atom for atom in (init_facts | set(reachable_facts)) if isinstance(atom, pddl.Atom)}
+    atoms = {atom.positive() for atom in (init_facts | set(reachable_facts)) if isinstance(atom, pddl.Literal)}
     relaxed_reachable = all(literal_holds(init_facts, goal) or goal in reachable_facts
                             for goal in instantiate_goal(task.goal))
     reachable_actions = [action for action in reachable_operators
@@ -159,21 +161,38 @@ def instantiate_domain(task, prune_static=True):
 
 ##################################################
 
-def instantiate_task(task, check_infeasible=True, **kwargs):
+def dump_instantiated(instantiated):
+    print('Instantiated frequencies:\n'
+          'Atoms: {}\n'
+          'Actions: {}\n'
+          'Axioms: {}'.format(
+        str_from_object(Counter(atom.predicate for atom in instantiated.atoms)),
+        str_from_object(Counter(action.action.name for action in instantiated.actions)),
+        str_from_object(Counter(axiom.axiom.name for axiom in instantiated.axioms))))
+
+def instantiate_task(task, check_infeasible=True, use_fd=FD_INSTANTIATE, **kwargs):
     start_time = time()
     print()
     normalize.normalize(task)
-    if FD_INSTANTIATE:
+    if use_fd:
         relaxed_reachable, atoms, actions, axioms, reachable_action_params = instantiate.explore(task)
     else:
         relaxed_reachable, atoms, actions, axioms = instantiate_domain(task, **kwargs)
         reachable_action_params = get_reachable_action_params(actions)
+    #for atom in sorted(filter(lambda a: isinstance(a, pddl.Literal), set(task.init) | set(atoms)),
+    #                   key=lambda a: a.predicate):
+    #    print(fact_from_fd(atom))
+    #print(axioms)
+    #for i, action in enumerate(sorted(actions, key=lambda a: a.name)):
+    #    print(i, transform_action_args(pddl_from_instance(action), obj_from_pddl))
     print('Infeasible:', not relaxed_reachable)
-    print('Instantiation time:', elapsed_time(start_time))
+    print('Instantiation time: {:.3f}s'.format(elapsed_time(start_time)))
     if check_infeasible and not relaxed_reachable:
         return None
     goal_list = instantiate_goal(task.goal)
-    return InstantiatedTask(task, atoms, actions, axioms, reachable_action_params, goal_list)
+    instantiated = InstantiatedTask(task, atoms, actions, axioms, reachable_action_params, goal_list)
+    dump_instantiated(instantiated)
+    return instantiated
 
 ##################################################
 
@@ -192,6 +211,7 @@ def sas_from_instantiated(instantiated_task):
         return unsolvable_sas_task("No relaxed solution")
     task, atoms, actions, axioms, reachable_action_params, goal_list = instantiated_task
 
+    # TODO: option to skip and just use binary variables
     with timers.timing("Computing fact groups", block=True):
         groups, mutex_groups, translation_key = fact_groups.compute_groups(
             task, atoms, reachable_action_params)
@@ -237,14 +257,16 @@ def sas_from_instantiated(instantiated_task):
                 options.filter_unimportant_vars)
 
     translate.dump_statistics(sas_task)
-    print('Translation time:', elapsed_time(start_time))
+    print('Translation time: {:.3f}s'.format(elapsed_time(start_time)))
     return sas_task
 
 ##################################################
 
 def write_sas_task(sas_task, temp_dir):
-    clear_dir(temp_dir)
     translate_path = os.path.join(temp_dir, TRANSLATE_OUTPUT)
+    #clear_dir(temp_dir)
+    safe_remove(translate_path)
+    ensure_dir(translate_path)
     with open(os.path.join(temp_dir, TRANSLATE_OUTPUT), "w") as output_file:
         sas_task.output(output_file)
     return translate_path
@@ -255,6 +277,7 @@ def sas_from_pddl(task, debug=False):
     #sas_task = translate.pddl_to_sas(task)
     with Verbose(debug):
         instantiated = instantiate_task(task)
+        #instantiated = convert_instantiated(instantiated)
         sas_task = sas_from_instantiated(instantiated)
         sas_task.metric = task.use_min_cost_metric # TODO: are these sometimes not equal?
     return sas_task
@@ -263,7 +286,20 @@ def sas_from_pddl(task, debug=False):
 def translate_and_write_pddl(domain_pddl, problem_pddl, temp_dir, verbose):
     domain = parse_sequential_domain(domain_pddl)
     problem = parse_problem(domain, problem_pddl)
-    task = task_from_domain_problem(domain, problem)
+    task = task_from_domain_problem(domain, problem, add_identical=False)
     sas_task = sas_from_pddl(task)
     write_sas_task(sas_task, temp_dir)
     return task
+
+
+def convert_instantiated(instantiated_task):
+    import axiom_rules
+    task, atoms, actions, axioms, reachable_action_params, goal_list = instantiated_task
+    normalize.normalize(task)
+    axioms, axiom_init, axiom_layer_dict = axiom_rules.handle_axioms(actions, axioms, goal_list)
+    init = task.init + axiom_init
+    # axioms.sort(key=lambda axiom: axiom.name)
+    # for axiom in axioms:
+    #  axiom.dump()
+    #return InstantiatedTask(task, atoms, actions, axioms, reachable_action_params, goal_list)
+    return InstantiatedTask(task, init, actions, axioms, reachable_action_params, goal_list) # init instead of atoms

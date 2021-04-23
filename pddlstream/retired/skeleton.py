@@ -173,7 +173,6 @@ class SkeletonQueue(Sized):
     # TODO: make an "action" for returning to the search (if it is the best decision)
     # TODO: could just maintain a list of active instances and sample/propagate
     # TODO: store bindings in a factored form that only combines when needed
-
     # TODO: update bindings given outcomes of eager streams
     # TODO: immediately evaluate eager streams in the queue
 
@@ -273,7 +272,8 @@ class SkeletonQueue(Sized):
         # assert(instance.opt_index == 0)
         if not is_instance_ready(self.evaluations, instance):
             raise RuntimeError(instance)
-        is_new = bool(process_instance(self.store, self.domain, instance, disable=self.disable))
+        new_results, _ = process_instance(self.store, self.domain, instance, disable=self.disable)
+        is_new = bool(new_results)
         for i, binding in enumerate(list(self.bindings_from_instance[instance])):
             #print(i, binding)
             # Maybe this list grows but not all the things are accounted for
@@ -357,7 +357,7 @@ class SkeletonQueue(Sized):
         # Temporarily pop off the queue and then re-add
         # Domination occurs when no downstream skeleton that
         # Is it worth even doing the dynamic instantiation?
-        # IF some set fails where the output is an input
+        # If some set fails where the output is an input
         # Scale input
 
     def __len__(self):

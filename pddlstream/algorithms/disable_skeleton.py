@@ -45,7 +45,6 @@ def create_disable_axiom(external_plan, use_parameters=True):
     effect = (UNSATISFIABLE,)
     axiom = make_axiom(parameters, preconditions, effect)
     #axiom.dump()
-    #user_input('Continue?')
     return axiom
 
 
@@ -53,7 +52,7 @@ def compute_failed_indices(skeleton):
     failed_indices = set()
     for binding in skeleton.root.post_order():
         result = binding.result
-        if (result is not None) and result.instance.num_calls and (not result.instance.successes):
+        if (result is not None) and result.instance.num_calls and (not result.instance.successful):
             failed_indices.add(binding.index)
             #assert not binding.children
     return sorted(failed_indices)
@@ -112,7 +111,7 @@ def extract_disabled_clusters(queue, full_cluster=False):
         #cluster_plans = [skeleton.stream_plan]
         cluster_plans = get_stream_plan_components(skeleton.stream_plan)
         binding = skeleton.best_binding
-        if not binding.is_bound():
+        if not binding.is_fully_bound:
             # TODO: block if cost sensitive to possibly get cheaper solutions
             cluster_plans = current_failed_cluster(binding) if full_cluster else current_failure_contributors(binding)
         for cluster_plan in cluster_plans:

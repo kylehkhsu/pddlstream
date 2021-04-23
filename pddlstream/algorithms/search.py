@@ -3,10 +3,10 @@ from __future__ import print_function
 from copy import deepcopy
 from time import time
 
-from pddlstream.language.temporal import solve_tfd
-from pddlstream.algorithms.downward import parse_solution, run_search, TEMP_DIR, write_pddl
-from pddlstream.algorithms.instantiate_task import write_sas_task, sas_from_pddl, translate_and_write_pddl
+from pddlstream.algorithms.downward import run_search, TEMP_DIR, write_pddl
+from pddlstream.algorithms.instantiate_task import write_sas_task, translate_and_write_pddl
 from pddlstream.utils import INF, Verbose, safe_rm_dir
+
 
 # TODO: manual_patterns
 # Specify on the discrete variables that are updated via conditional effects
@@ -34,7 +34,7 @@ def solve_from_task(sas_task, temp_dir=TEMP_DIR, clean=False, debug=False, hiera
     #    axiom.dump()
     return solution
 
-def solve_from_pddl(domain_pddl, problem_pddl, temp_dir=TEMP_DIR, clean=False, debug=False, **search_args):
+def solve_from_pddl(domain_pddl, problem_pddl, temp_dir=TEMP_DIR, clean=False, debug=False, **search_kwargs):
     # TODO: combine with solve_from_task
     #return solve_tfd(domain_pddl, problem_pddl)
     start_time = time()
@@ -42,7 +42,7 @@ def solve_from_pddl(domain_pddl, problem_pddl, temp_dir=TEMP_DIR, clean=False, d
         write_pddl(domain_pddl, problem_pddl, temp_dir)
         #run_translate(temp_dir, verbose)
         translate_and_write_pddl(domain_pddl, problem_pddl, temp_dir, debug)
-        solution = run_search(temp_dir, debug=debug, **search_args)
+        solution = run_search(temp_dir, debug=debug, **search_kwargs)
         if clean:
             safe_rm_dir(temp_dir)
         print('Total runtime:', time() - start_time)
@@ -172,10 +172,10 @@ def abstrips_solve_from_task(sas_task, temp_dir=TEMP_DIR, clean=False, debug=Fal
     # Like partial order planning in terms of precondition order
     # TODO: add achieve subgoal actions
     # TODO: most generic would be a heuristic on each state
-    if hierarchy is None:
-        return solve_from_task(sas_task, temp_dir=temp_dir, clean=clean, debug=debug, **kwargs)
     if hierarchy == SERIALIZE:
         return serialized_solve_from_task(sas_task, temp_dir=temp_dir, clean=clean, debug=debug, **kwargs)
+    if not hierarchy:
+        return solve_from_task(sas_task, temp_dir=temp_dir, clean=clean, debug=debug, **kwargs)
     start_time = time()
     plan, cost = None, INF
     with Verbose(debug):

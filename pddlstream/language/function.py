@@ -1,7 +1,7 @@
 import time
 
 from pddlstream.language.conversion import substitute_expression, list_from_conjunction, str_from_head
-from pddlstream.language.constants import Not, Equal, get_prefix, get_args, is_head
+from pddlstream.language.constants import Not, Equal, get_prefix, get_args, is_head, FunctionAction
 from pddlstream.language.external import ExternalInfo, Result, Instance, External, DEBUG, get_procedure_fn
 from pddlstream.utils import str_from_object, apply_mapping
 
@@ -14,19 +14,32 @@ from pddlstream.utils import str_from_object, apply_mapping
 #from inspect import getargspec as get_arg_spec
 #from inspect import signature
 
+##################################################
+
+def add_opt_function(name, base_fn, stream_map, stream_info, constant=0., coefficient=1., **external_kwargs):
+    stream_fn = lambda *args, **kwargs: constant + coefficient*base_fn(*args, **kwargs)
+    opt_fn = lambda *args, **kwargs: constant
+    info = FunctionInfo(opt_fn=opt_fn, **external_kwargs)
+    stream_map[name] = stream_fn
+    stream_info[name] = info
+    return stream_info, info
+
+##################################################
+
 class FunctionInfo(ExternalInfo):
-    def __init__(self, opt_fn=None, **kwargs):
-        super(FunctionInfo, self).__init__(**kwargs)
+    _default_eager = True
+    def __init__(self, opt_fn=None, eager=_default_eager, **kwargs): # Setting eager=True as a heuristic
+        super(FunctionInfo, self).__init__(eager=eager, **kwargs)
         self.opt_fn = opt_fn
-        self.defer = False
         #self.order = 0
 
 class FunctionResult(Result):
-    def __init__(self, instance, value, opt_index=None, optimistic=True):
-        super(FunctionResult, self).__init__(instance, opt_index, 0, optimistic)
+    def __init__(self, instance, value, optimistic=True):
+        super(FunctionResult, self).__init__(instance, opt_index=0, call_index=0, optimistic=optimistic)
         self.instance = instance
         self.value = value
         self._certified = None
+        # TODO: could add empty output_objects tuple
     @property
     def certified(self):
         if self._certified is None:
@@ -34,65 +47,75 @@ class FunctionResult(Result):
         return self._certified
     def get_certified(self):
         return self.certified
-    def get_tuple(self):
-        return self.external.name, self.instance.input_objects, self.value
+    def get_action(self):
+        return FunctionAction(self.name, self.input_objects)
     def remap_inputs(self, bindings):
-        #if not any(o in bindings for o in self.instance.get_objects()):
+        #if not any(o in bindings for o in self.instance.get_all_input_objects()):
         #    return self
         input_objects = apply_mapping(self.instance.input_objects, bindings)
         new_instance = self.external.get_instance(input_objects)
-        new_instance.opt_index = self.instance.opt_index
-        return self.__class__(new_instance, self.value, self.opt_index, self.optimistic)
+        return self.__class__(new_instance, self.value, self.optimistic)
     def is_successful(self):
         return True
     def __repr__(self):
-        return '{}={}'.format(str_from_head(self.instance.get_head()), self.value)
+        #from pddlstream.algorithms.downward import get_cost_scale
+        #value = math.log(self.value) # TODO: number of digits to display
+        return '{}={:.3f}'.format(str_from_head(self.instance.head), self.value)
 
 class FunctionInstance(Instance):
     _Result = FunctionResult
     #_opt_value = 0
     def __init__(self, external, input_objects):
         super(FunctionInstance, self).__init__(external, input_objects)
-        self.value = None
         self._head = None
     @property
     def head(self):
         if self._head is None:
-            self._head = substitute_expression(self.external.head, self.get_mapping())
+            self._head = substitute_expression(self.external.head, self.mapping)
         return self._head
-    def get_head(self):
-        return self.head
-    def next_results(self, verbose=False):
-        start_time = time.time()
-        assert not self.enumerated
+    @property
+    def value(self):
+        assert len(self.history) == 1
+        return self.history[0]
+    def _compute_output(self):
         self.enumerated = True
+        self.num_calls += 1
+        if self.history:
+            return self.value
         input_values = self.get_input_values()
         value = self.external.fn(*input_values)
-        self.value = self.external.codomain(value)
         # TODO: cast the inputs and test whether still equal?
-        #if not (type(self.value) is self.external._codomain):
-        #if not isinstance(self.value, self.external.codomain):
-        if self.value < 0:
-            raise ValueError('Function [{}] produced a negative value [{}]'.format(
-                self.external.name, self.value))
-        if (self.value is not False) and verbose:
-            start_call = 0
-            print('{}) {}{}={}'.format(start_call, get_prefix(self.external.head),
-                                       str_from_object(self.get_input_values()), self.value))
-        results = [self._Result(self, self.value, opt_index=None, optimistic=False)]
-        #if isinstance(self, PredicateInstance) and (self.value != self.external.opt_fn(*input_values)):
-        #    self.update_statistics(start_time, [])
-        self.update_statistics(start_time, results)
+        # if not (type(self.value) is self.external._codomain):
+        # if not isinstance(self.value, self.external.codomain):
+        if value < 0:
+            raise ValueError('Function [{}] produced a negative value [{}]'.format(self.external.name, value))
+        self.history.append(self.external.codomain(value))
+        return self.value
+    def next_results(self, verbose=False):
+        assert not self.enumerated
+        start_time = time.time()
+        start_calls = self.num_calls
+        start_history = len(self.history)
+        value = self._compute_output()
+        new_results = [self._Result(self, value, optimistic=False)]
         new_facts = []
-        return results, new_facts
+
+        if (value is not False) and verbose:
+            # TODO: str(new_results[-1])
+            print('iter={}, outs={}) {}{}={:.3f}'.format(start_calls, len(new_results), get_prefix(self.external.head),
+                                                         str_from_object(self.get_input_values()), value))
+        if start_history <= len(self.history) - 1:
+            self.update_statistics(start_time, new_results)
+        self.successful |= any(r.is_successful() for r in new_results)
+        return new_results, new_facts
     def next_optimistic(self):
         if self.enumerated or self.disabled:
             return []
         opt_value = self.external.opt_fn(*self.get_input_values())
-        self.opt_results = [self._Result(self, opt_value, opt_index=self.opt_index, optimistic=True)]
+        self.opt_results = [self._Result(self, opt_value, optimistic=True)]
         return self.opt_results
     def __repr__(self):
-        return '{}=?{}'.format(str_from_head(self.get_head()), self.external.codomain.__name__)
+        return '{}=?{}'.format(str_from_head(self.head), self.external.codomain.__name__)
 
 class Function(External):
     """
@@ -101,16 +124,16 @@ class Function(External):
     """
     codomain = float # int | float
     _Instance = FunctionInstance
-    _default_p_success = 0.99 # 0.99 | 1  # Might be pruned using cost threshold
-    _default_overhead = None
+    #_default_p_success = 0.99 # 0.99 | 1  # Might be pruned using cost threshold
     def __init__(self, head, fn, domain, info):
+        # TODO: function values that act as preconditions (cost must be below threshold)
         if info is None:
             # TODO: move the defaults to FunctionInfo in the event that an optimistic fn is specified
-            info = FunctionInfo(p_success=self._default_p_success, overhead=self._default_overhead)
+            info = FunctionInfo() #p_success=self._default_p_success)
         super(Function, self).__init__(get_prefix(head), info, get_args(head), domain)
         self.head = head
         opt_fn = lambda *args: self.codomain()
-        self.fn = opt_fn if fn == DEBUG else fn
+        self.fn = opt_fn if (fn == DEBUG) else fn
         #arg_spec = get_arg_spec(self.fn)
         #if len(self.inputs) != len(arg_spec.args):
         #    raise TypeError('Function [{}] expects inputs {} but its procedure has inputs {}'.format(
@@ -119,20 +142,33 @@ class Function(External):
     @property
     def function(self):
         return get_prefix(self.head)
-    def get_complexity(self, num_calls):
-        #return 1 + num_calls
-        return 0
+    @property
+    def has_outputs(self):
+        return False
+    @property
+    def is_fluent(self):
+        return False
+    @property
     def is_negated(self):
         return False
+    @property
+    def is_function(self):
+        return True
+    @property
+    def is_cost(self):
+        return True
     def __repr__(self):
         return '{}=?{}'.format(str_from_head(self.head), self.codomain.__name__)
 
 ##################################################
 
+class PredicateInfo(FunctionInfo):
+    _default_eager = False
+
 class PredicateResult(FunctionResult):
     def get_certified(self):
         # TODO: cache these results
-        expression = self.instance.get_head()
+        expression = self.instance.head
         return [expression if self.value else Not(expression)]
     def is_successful(self):
         opt_value = self.external.opt_fn(*self.instance.get_input_values())
@@ -152,19 +188,23 @@ class Predicate(Function):
     """
     _Instance = PredicateInstance
     codomain = bool
-    _default_p_success = None
-    _default_overhead = None
     #def is_negative(self):
     #    return self._Instance._opt_value is False
-    def __init__(self, *args):
-        super(Predicate, self).__init__(*args)
+    def __init__(self, head, fn, domain, info):
+        if info is None:
+            info = PredicateInfo()
+        super(Predicate, self).__init__(head, fn, domain, info)
         assert(self.info.opt_fn is None)
         self.blocked_predicate = self.name
     @property
     def predicate(self):
         return self.function
+    @property
     def is_negated(self):
         return True
+    @property
+    def is_cost(self):
+        return False
 
 ##################################################
 

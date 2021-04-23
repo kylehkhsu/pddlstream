@@ -6,6 +6,19 @@
   ;  (and (Traj ?t) (Pose ?b2 ?p2))
   ;)
 
+  (:stream t-region
+    :inputs (?b ?p ?r)
+    :domain (and (Pose ?b ?p) (Placeable ?b ?r))
+    :certified (Contain ?b ?p ?r))
+
+  (:stream s-grasp
+    :inputs (?b)
+    :domain (Block ?b)
+    :outputs (?g)
+    :certified (Grasp ?b ?g))
+
+  ;;;;;;;;;;
+
   ; Creates fewer free variables than optimizer.pddl
   (:optimizer gurobi
 
@@ -14,10 +27,17 @@
     ;  :inputs (?b) ; TODO: input-domain, variable-domain, codomain, image
     ;  :domain (Block ?b)
     ;  :graph (Pose ?b ?p))
+
     (:variables (?p)
       :inputs (?b ?r)
       :domain (Placeable ?b ?r)
       :graph (and (Contain ?b ?p ?r) (Pose ?b ?p)))
+
+    ;(:variables (?g)
+    ;  :inputs (?b)
+    ;  :domain (Block ?b)
+    ;  :graph (Grasp ?b ?g))
+
     (:variables (?q)
       :graph (Conf ?q))
 
@@ -25,8 +45,10 @@
     ; TODO: can fix variables in the optimization using necessary conditions
     ;(:constraint (Contain?b ?p ?r) ; TODO: make this a cluster of constraints?
     ; :necessary (and (Placeable ?b ?r) (Pose ?b ?p)))
-    (:constraint (Kin ?b ?q ?p)
-      :necessary (and (Pose ?b ?p) (Conf ?q)))
+
+    (:constraint (Kin ?b ?q ?p ?g)
+      :necessary (and (Pose ?b ?p) (Grasp ?b ?g) (Conf ?q)))
+
     (:constraint (CFree ?b1 ?p1 ?b2 ?p2)
       :necessary (and (Pose ?b1 ?p1) (Pose ?b2 ?p2)))
     ; TODO: maybe prevent initial configurations from being considered
@@ -34,6 +56,8 @@
     ; Additive objective functions
     (:objective Dist)
   )
+
+  ;;;;;;;;;;
 
   ;(:optimizer rrt
   ;  (:variables (?t)
@@ -44,6 +68,8 @@
   ;  ; Treating predicate as objective
   ;  ;(:objective TrajCollision)
   ;)
+
+  ;;;;;;;;;;
 
   (:optimizer rrt
     (:variables (?t)

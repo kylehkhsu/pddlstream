@@ -6,7 +6,9 @@ from pddlstream.algorithms.common import COMPLEXITY_OP
 from pddlstream.algorithms.relation import compute_order, Relation, solve_satisfaction
 from pddlstream.language.constants import is_parameter
 from pddlstream.language.conversion import is_atom, head_from_fact
-from pddlstream.utils import safe_zip, HeapElement
+from pddlstream.utils import safe_zip, HeapElement, safe_apply_mapping
+
+USE_RELATION = True
 
 # TODO: maybe store unit complexity here as well as a tiebreaker
 Priority = namedtuple('Priority', ['complexity', 'num']) # num ensures FIFO
@@ -32,9 +34,10 @@ def test_mapping(atoms1, atoms2):
 # http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.43.7049&rep=rep1&type=pdf
 
 class Instantiator(Sized): # Dynamic Instantiator
-    def __init__(self, streams, evaluations={}):
+    def __init__(self, streams, evaluations={}, verbose=False):
         # TODO: lazily instantiate upon demand
         self.streams = streams
+        self.verbose = verbose
         #self.streams_from_atom = defaultdict(list)
         self.queue = []
         self.num_pushes = 0 # shared between the queues
@@ -48,6 +51,7 @@ class Instantiator(Sized): # Dynamic Instantiator
         for atom, node in evaluations.items():
             self.add_atom(atom, node.complexity)
         # TODO: revisit deque and add functions to front
+        # TODO: record the stream instances or results?
 
     #########################
 
@@ -65,6 +69,8 @@ class Instantiator(Sized): # Dynamic Instantiator
         priority = Priority(complexity, self.num_pushes)
         heappush(self.queue, HeapElement(priority, instance))
         self.num_pushes += 1
+        if self.verbose:
+            print(self.num_pushes, instance)
 
     def pop_stream(self):
         priority, instance = heappop(self.queue)
@@ -84,7 +90,7 @@ class Instantiator(Sized): # Dynamic Instantiator
         for combo in product(*atoms):
             mapping = test_mapping(domain, combo)
             if mapping is not None:
-                input_objects = tuple(mapping[p] for p in stream.inputs)
+                input_objects = safe_apply_mapping(stream.inputs, mapping)
                 self.push_instance(stream.get_instance(input_objects))
 
     def _add_combinations_relation(self, stream, atoms):
@@ -100,7 +106,7 @@ class Instantiator(Sized): # Dynamic Instantiator
         solution = solve_satisfaction(relations)
         for element in solution.body:
             mapping = solution.get_mapping(element)
-            input_objects = tuple(mapping[p] for p in stream.inputs)
+            input_objects = safe_apply_mapping(stream.inputs, mapping)
             self.push_instance(stream.get_instance(input_objects))
 
     def _add_new_instances(self, new_atom):
@@ -112,8 +118,10 @@ class Instantiator(Sized): # Dynamic Instantiator
                     self.atoms_from_domain[s_idx, d_idx].append(new_atom)
                     atoms = [self.atoms_from_domain[s_idx, d2_idx] if d_idx != d2_idx else [new_atom]
                               for d2_idx in range(len(stream.domain))]
-                    self._add_combinations(stream, atoms)
-                    #self._add_combinations_relation(stream, atoms)
+                    if USE_RELATION:
+                        self._add_combinations_relation(stream, atoms)
+                    else:
+                        self._add_combinations(stream, atoms)
 
     def add_atom(self, atom, complexity):
         if not is_atom(atom):
