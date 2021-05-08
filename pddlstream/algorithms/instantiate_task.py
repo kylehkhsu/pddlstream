@@ -32,14 +32,16 @@ def instantiate_goal(goal):
 def get_goal_instance(goal):
     return pddl.PropositionalAction(GOAL_NAME, instantiate_goal(goal), [], None)
 
+
 ##################################################
 
 def get_constants(atom):
     return tuple((i, a) for i, a in enumerate(atom.args) if not is_parameter(a))
 
+
 def instantiate_condition(action, is_static, args_from_predicate):
     parameters = {p.name for p in action.parameters}
-    #if not parameters:
+    # if not parameters:
     #    yield {}
     #    return
     static_conditions = list(filter(is_static, get_literals(get_precondition(action))))
@@ -56,14 +58,16 @@ def instantiate_condition(action, is_static, args_from_predicate):
     for element in solution.body:
         yield solution.get_mapping(element)
 
+
 def get_reachable_action_params(instantiated_actions):
     reachable_action_params = defaultdict(list)
     for inst_action in instantiated_actions:
         action = inst_action.action
         parameters = [p.name for p in action.parameters]
         args = apply_mapping(parameters, inst_action.var_mapping)
-        reachable_action_params[action].append(args) # TODO: does this actually do anything
+        reachable_action_params[action].append(args)  # TODO: does this actually do anything
     return reachable_action_params
+
 
 ##################################################
 
@@ -77,9 +81,10 @@ def get_achieving_axioms(state, operators, negated_from_name={}):
     unprocessed_from_literal = defaultdict(list)
     operator_from_literal = {}
     remaining_from_stream = {}
-    reachable_operators = set() # TODO: only keep facts
+    reachable_operators = set()  # TODO: only keep facts
 
     queue = deque()
+
     def process_axiom(op, effect):
         reachable_operators.add(id(op))
         if effect not in operator_from_literal:
@@ -108,6 +113,7 @@ def get_achieving_axioms(state, operators, negated_from_name={}):
             if remaining_from_stream[id(op), effect] == 0:
                 process_axiom(op, effect)
     return operator_from_literal, [op for op in operators if id(op) in reachable_operators]
+
 
 ##################################################
 
@@ -159,6 +165,7 @@ def instantiate_domain(task, prune_static=True):
                         if isinstance(axiom, pddl.PropositionalAxiom)]
     return relaxed_reachable, atoms, reachable_actions, reachable_axioms
 
+
 ##################################################
 
 def dump_instantiated(instantiated):
@@ -170,6 +177,7 @@ def dump_instantiated(instantiated):
         str_from_object(Counter(action.action.name for action in instantiated.actions)),
         str_from_object(Counter(axiom.axiom.name for axiom in instantiated.axioms))))
 
+
 def instantiate_task(task, check_infeasible=True, use_fd=FD_INSTANTIATE, **kwargs):
     start_time = time()
     print()
@@ -179,11 +187,11 @@ def instantiate_task(task, check_infeasible=True, use_fd=FD_INSTANTIATE, **kwarg
     else:
         relaxed_reachable, atoms, actions, axioms = instantiate_domain(task, **kwargs)
         reachable_action_params = get_reachable_action_params(actions)
-    #for atom in sorted(filter(lambda a: isinstance(a, pddl.Literal), set(task.init) | set(atoms)),
+    # for atom in sorted(filter(lambda a: isinstance(a, pddl.Literal), set(task.init) | set(atoms)),
     #                   key=lambda a: a.predicate):
     #    print(fact_from_fd(atom))
-    #print(axioms)
-    #for i, action in enumerate(sorted(actions, key=lambda a: a.name)):
+    # print(axioms)
+    # for i, action in enumerate(sorted(actions, key=lambda a: a.name)):
     #    print(i, transform_action_args(pddl_from_instance(action), obj_from_pddl))
     print('Infeasible:', not relaxed_reachable)
     print('Instantiation time: {:.3f}s'.format(elapsed_time(start_time)))
@@ -193,6 +201,7 @@ def instantiate_task(task, check_infeasible=True, use_fd=FD_INSTANTIATE, **kwarg
     instantiated = InstantiatedTask(task, atoms, actions, axioms, reachable_action_params, goal_list)
     dump_instantiated(instantiated)
     return instantiated
+
 
 ##################################################
 
@@ -260,11 +269,12 @@ def sas_from_instantiated(instantiated_task):
     print('Translation time: {:.3f}s'.format(elapsed_time(start_time)))
     return sas_task
 
+
 ##################################################
 
 def write_sas_task(sas_task, temp_dir):
     translate_path = os.path.join(temp_dir, TRANSLATE_OUTPUT)
-    #clear_dir(temp_dir)
+    # clear_dir(temp_dir)
     safe_remove(translate_path)
     ensure_dir(translate_path)
     with open(os.path.join(temp_dir, TRANSLATE_OUTPUT), "w") as output_file:
@@ -273,22 +283,32 @@ def write_sas_task(sas_task, temp_dir):
 
 
 def sas_from_pddl(task, debug=False):
-    #normalize.normalize(task)
-    #sas_task = translate.pddl_to_sas(task)
+    # normalize.normalize(task)
+    # sas_task = translate.pddl_to_sas(task)
     with Verbose(debug):
         instantiated = instantiate_task(task)
-        #instantiated = convert_instantiated(instantiated)
+        # instantiated = convert_instantiated(instantiated)
         sas_task = sas_from_instantiated(instantiated)
-        sas_task.metric = task.use_min_cost_metric # TODO: are these sometimes not equal?
+        sas_task.metric = task.use_min_cost_metric  # TODO: are these sometimes not equal?
     return sas_task
 
 
 def translate_and_write_pddl(domain_pddl, problem_pddl, temp_dir, verbose):
+    parse_domain_start = time()
     domain = parse_sequential_domain(domain_pddl)
+    print('Parse sequential domain:', time() - parse_domain_start)
+    parse_problem_start = time()
     problem = parse_problem(domain, problem_pddl)
+    print('Parse problem:', time() - parse_problem_start)
+    task_from_domain_problem_start = time()
     task = task_from_domain_problem(domain, problem, add_identical=False)
+    print('Task from domain problem:', time() - task_from_domain_problem_start)
+    sas_task_start = time()
     sas_task = sas_from_pddl(task)
+    print('sas task:', time() - sas_task_start)
+    write_sas_task_start = time()
     write_sas_task(sas_task, temp_dir)
+    print('write sas task:', time() - write_sas_task_start)
     return task
 
 
@@ -301,5 +321,5 @@ def convert_instantiated(instantiated_task):
     # axioms.sort(key=lambda axiom: axiom.name)
     # for axiom in axioms:
     #  axiom.dump()
-    #return InstantiatedTask(task, atoms, actions, axioms, reachable_action_params, goal_list)
-    return InstantiatedTask(task, init, actions, axioms, reachable_action_params, goal_list) # init instead of atoms
+    # return InstantiatedTask(task, atoms, actions, axioms, reachable_action_params, goal_list)
+    return InstantiatedTask(task, init, actions, axioms, reachable_action_params, goal_list)  # init instead of atoms

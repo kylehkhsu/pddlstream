@@ -39,10 +39,16 @@ def solve_from_pddl(domain_pddl, problem_pddl, temp_dir=TEMP_DIR, clean=False, d
     #return solve_tfd(domain_pddl, problem_pddl)
     start_time = time()
     with Verbose(debug):
+        write_start = time()
         write_pddl(domain_pddl, problem_pddl, temp_dir)
+        print('Write time:', time() - write_start)
         #run_translate(temp_dir, verbose)
+        translate_start = time()
         translate_and_write_pddl(domain_pddl, problem_pddl, temp_dir, debug)
+        print('Translate time:', time() - translate_start)
+        search_start = time()
         solution = run_search(temp_dir, debug=debug, **search_kwargs)
+        print('Search time:', time() - search_start)
         if clean:
             safe_rm_dir(temp_dir)
         print('Total runtime:', time() - start_time)
